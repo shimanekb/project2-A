@@ -1,7 +1,7 @@
-package kvstore
+package store
 
 import (
-	"github.com/shimanekb/project1-C/index"
+	"github.com/shimanekb/project2-A/index"
 	log "github.com/sirupsen/logrus"
 	"math"
 )
@@ -138,7 +138,7 @@ func NewLocalStore(dataLogPath string, indexPath string) (Store, error) {
 		return nil, err
 	}
 
-	cache, _ := NewLruCache()
+	cache, _ := NewMemTableCache()
 	buffer := make([]Command, 0, LOG_FLUSH_THRESHOLD)
 
 	store := LocalStore{idx, cache, buffer, 0}

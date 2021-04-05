@@ -1,42 +1,44 @@
-package kvstore
-
-import (
-	"fmt"
-	lru "github.com/hashicorp/golang-lru"
-)
+package store
 
 type Cache interface {
 	Get(key string) (value interface{}, ok bool)
 	Add(key string, value interface{})
 	Remove(key string)
 	Keys() []string
+	Size() int
 }
 
-type LruCache struct {
-	Lru *lru.ARCCache
+type MemTableCache struct {
+	m map[string]interface{}
 }
 
-func (l *LruCache) Add(key string, value interface{}) {
-	l.Lru.Add(key, value)
+func (t *MemTableCache) Add(key string, value interface{}) {
+	t.m[key] = value
 }
 
-func (l *LruCache) Get(key string) (value interface{}, ok bool) {
-	var v interface{}
-	v, ok = l.Lru.Get(key)
-	value = fmt.Sprintf("%v", v)
+func (t *MemTableCache) Get(key string) (value interface{}, ok bool) {
+	value, ok = t.m[key]
 	return value, ok
 }
 
-func (l *LruCache) Remove(key string) {
-	l.Lru.Remove(key)
+func (t *MemTableCache) Remove(key string) {
+	delete(t.m, key)
 }
 
-func (l *LruCache) Keys() []string {
-	return l.Keys()
+func (t *MemTableCache) Keys() []string {
+	keys := make([]string, 0, len(t.m))
+	for k := range t.m {
+		keys = append(keys, k)
+	}
+
+	return keys
 }
 
-func NewLruCache() (Cache, error) {
-	var cache *lru.ARCCache
-	cache, err := lru.NewARC(1000)
-	return &LruCache{cache}, err
+func (t *MemTableCache) Size() int {
+	return len(t.m)
+}
+
+func NewMemTableCache() Cache {
+	m := make(map[string]interface{})
+	return &MemTableCache{m}
 }
