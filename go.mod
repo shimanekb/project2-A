@@ -1,4 +1,4 @@
-module github.com/shimanekb/project1-C
+module github.com/shimanekb/project2-A
 
 go 1.15
 
