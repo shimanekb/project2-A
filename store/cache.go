@@ -1,5 +1,10 @@
 package store
 
+import (
+	"fmt"
+	lru "github.com/hashicorp/golang-lru"
+)
+
 type Cache interface {
 	Get(key string) (value interface{}, ok bool)
 	Add(key string, value interface{})
@@ -41,4 +46,31 @@ func (t *MemTableCache) Size() int {
 func NewMemTableCache() Cache {
 	m := make(map[string]interface{})
 	return &MemTableCache{m}
+}
+
+type LruCache struct {
+	Lru *lru.ARCCache
+}
+
+func (l *LruCache) Add(key string, value interface{}) {
+	l.Lru.Add(key, value)
+}
+
+func (l *LruCache) Get(key string) (value interface{}, ok bool) {
+	value, ok = l.Lru.Get(key)
+	return value, ok
+}
+
+func (l *LruCache) Remove(key string) {
+	l.Lru.Remove(key)
+}
+
+func (l *LruCache) Keys() []string {
+	return l.Keys()
+}
+
+func NewLruCache() (Cache, error) {
+	var cache *lru.ARCCache
+	cache, err := lru.NewARC(1000)
+	return &LruCache{cache}, err
 }
