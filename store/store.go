@@ -27,6 +27,40 @@ type Store interface {
 	Flush()
 }
 
+type SsStore struct {
+	idx   index.Index
+	cache Cache
+}
+
+func (s *SsStore) Put(key string, value string) error {
+	return nil
+}
+
+func (s *SsStore) Get(key string) (value string, ok bool) {
+	return "", false
+}
+
+func (s *SsStore) Del(key string) {
+}
+
+func (s *SsStore) Flush() {
+}
+
+func NewSsStore(dataPath string, indexPath string) (Store, error) {
+	dl := index.NewLocalDataLog(dataPath)
+	idx := index.NewLocalIndex(indexPath, dl)
+	err := idx.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	cache, _ := NewMemTableCache()
+
+	store := SsStore{idx, cache}
+
+	return &store, nil
+}
+
 type LocalStore struct {
 	idx           index.Index
 	cache         Cache
@@ -128,20 +162,4 @@ func (s *LocalStore) Put(key string, value string) error {
 	s.flush()
 
 	return nil
-}
-
-func NewLocalStore(dataLogPath string, indexPath string) (Store, error) {
-	dl := index.NewLocalDataLog(dataLogPath)
-	idx := index.NewLocalIndex(indexPath, dl)
-	err := idx.Load()
-	if err != nil {
-		return nil, err
-	}
-
-	cache, _ := NewMemTableCache()
-	buffer := make([]Command, 0, LOG_FLUSH_THRESHOLD)
-
-	store := LocalStore{idx, cache, buffer, 0}
-
-	return &store, nil
 }

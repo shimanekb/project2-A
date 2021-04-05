@@ -4,7 +4,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	store "github.com/shimanekb/project1-C/store"
+	store "github.com/shimanekb/project2-A/store"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"os"
@@ -52,7 +52,7 @@ func ReadCsvCommands(filePath string, outputPath string) {
 
 	logPath := filepath.Join(path, STORAGE_FILE)
 	indexPath := filepath.Join(path, INDEX_FILE)
-	localStore, storeErr := store.NewLocalStore(logPath, indexPath)
+	localStore, storeErr := store.NewSsStore(logPath, indexPath)
 	if storeErr != nil {
 		log.Fatal("Could not create store.", storeErr)
 	}
