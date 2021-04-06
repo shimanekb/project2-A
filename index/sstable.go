@@ -1,24 +1,39 @@
 package index
 
 import (
+	"crypto/sha1"
 	"encoding/csv"
 	"errors"
 	"fmt"
-	order "github.com/elliotchance/orderedmap"
+	"github.com/elliotchance/orderedmap"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 )
 
 const (
 	BlockSizeBytes int64 = 4000
+	KeySizeChar    int   = 8
 )
 
+func keyHash(key string) string {
+	h := sha1.New()
+	h.Write([]byte(key))
+	b := h.Sum(nil)
+	return fmt.Sprintf("%x", b[0:KeySizeChar])
+}
+
 type KeyValueItem struct {
-	key   string
-	value string
-	size  int64
+	key     string
+	keyHash string
+	value   string
+	size    int64
+}
+
+func (k *KeyValueItem) KeyHash() string {
+	return k.keyHash
 }
 
 func (k *KeyValueItem) Key() string {
@@ -34,18 +49,20 @@ func (k *KeyValueItem) Size() int64 {
 }
 
 func NewKeyValueItem(key string, value string) KeyValueItem {
-	size := int64(len([]byte(value)))
-	return KeyValueItem{key, value, size}
+	s := KeySizeChar + len([]byte(value))
+	size := int64(s)
+	kh := keyHash(key)
+	return KeyValueItem{key, kh, value, size}
 }
 
 type Block struct {
-	blockNumber int
-	items       order.OrderedMap
-	size        int64
+	blockKey string
+	items    orderedmap.OrderedMap
+	size     int64
 }
 
-func (b *Block) BlockNumber() int {
-	return b.blockNumber
+func (b *Block) BlockKey() string {
+	return b.blockKey
 }
 
 func (b *Block) Keys() []string {
@@ -60,7 +77,7 @@ func (b *Block) Size() int64 {
 	return b.size
 }
 
-func NewBlock(blockNumber int, items order.OrderMap) Block {
+func NewBlock(blockKey string, items orderedmap.OrderMap) Block {
 	return Block{blockNumber, items, BlockSizeBytes}
 }
 
@@ -70,17 +87,120 @@ type BlockStorage interface {
 }
 
 type SsBlockStorage struct {
-	filePath     string
-	currentBlock *Block
+	filePath string
 }
 
 func NewSsBlockStorage(filePath string) BlockStorage {
-	return &SsBlockStorage{filePath, nil}
+	return &SsBlockStorage{filePath}
+}
+
+type By func(i1, i2 *KeyValueItem) bool
+
+func (by By) Sort(items []KeyValueItem) {
+	it := &KeyValueItemSorter{
+		items: items,
+		by:    by,
+	}
+	sort.Sort(it)
+}
+
+type KeyValueItemSorter struct {
+	items []KeyValueItem
+	by    func(i1, i2 *KeyValueItem) bool
+}
+
+func (k *KeyValueItemSorter) Len() int {
+	return len(k.items)
+}
+
+func (k *KeyValueItemSorter) Swap(i, j int) {
+	k.items[i], k.items[j] = k.items[j], k.items[i]
+}
+
+func (k *KeyValueItemSorter) Less(i, j int) bool {
+	return k.by(&k.items[i], &k.items[j])
+}
+
+func sortKeyValueItemsByHash(items []KeyValueItem) {
+	hsh := func(i1, i2 *KeyValueItem) bool {
+		return i1.keyHash < i2.keyHash
+	}
+
+	By(hsh).Sort(items)
+}
+
+func keyValueItemsOrderedMap(items []KeyValueItem) orderedmap.OrderedMap {
+	m := orderedmap.NewOrderedMap()
+	for _, it := range items {
+		m.Set(it.keyHash, it)
+	}
+
+	return m
+}
+
+// items are assumed ordered
+func createBlock(items []KeyValueItem, startingIndex int) (block Block, nextIndex int) {
+	var currentSizeBytes int64 = 0
+	endIndex := startingIndex
+	for currentSizeBytes+items[endIndex].Size() <= BlockSizeBytes {
+		if endIndex > len(items)-1 {
+			break
+		}
+
+		it := items[endIndex]
+		currentSizeBytes += it.Size()
+		endIndex += 1
+	}
+
+	m := keyValueItemsOrderedMap(items[startingIndex:endIndex])
+	block = NewBlock(items[startingIndex].keyHash, m)
+	nextIndex = endIndex
+
+	return block, endIndex
+}
+
+func writeBlock(filepath string, block Block) error {
+	f, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+	for _, k := range block.Keys() {
+		it, _ := block.items.Get(k)
+		s := fmt.Sprintf("%d%s%s", it.Size(), it.KeyHash(), it.Value())
+		_, werr := f.WriteString(s)
+		if werr != nil {
+			return werr
+		}
+	}
+
+	return nil
+}
+
+func deleteSsFile(filepath string) error {
+	e := os.Remove(filepath)
+	return e
 }
 
 func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) error {
-	// order items
-	// if current block empty make new empty
+	sortKeyValueItemsByHash(items)
+	startingIndex := 0
+
+	e := deleteSsFile(s.filePath)
+	if e != nil {
+		return e
+	}
+
+	for startingIndex < len(items) {
+		block, nextIndex := createBlock(items, startingIndex)
+		startingIndex = nextIndex
+		err := writeBlock(s.filePath, block)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
