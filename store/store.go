@@ -1,7 +1,7 @@
 package store
 
 import (
-	"github.com/shimanekb/project2-A/index/sstable"
+	"github.com/shimanekb/project2-A/index"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -26,16 +26,16 @@ type Store interface {
 }
 
 type SsStore struct {
-	blockStorage sstable.BlockStorage
+	blockStorage index.BlockStorage
 	cache        Cache
 }
 
-func convertToKeyValueItems(cache Cache) []sstable.KeyValueItem {
-	items := make([]sstable.KeyValueItem, 0, cache.Size())
+func convertToKeyValueItems(cache Cache) []index.KeyValueItem {
+	items := make([]index.KeyValueItem, 0, cache.Size())
 	for _, key := range cache.Keys() {
 		value, _ := cache.Get(key)
 		v := value.(string)
-		kv := sstable.NewKeyValueItem(key, v)
+		kv := index.NewKeyValueItem(key, v)
 		items = append(items, kv)
 	}
 
@@ -44,7 +44,7 @@ func convertToKeyValueItems(cache Cache) []sstable.KeyValueItem {
 
 func (s *SsStore) Put(key string, value string) error {
 	if s.cache.Size() >= DATA_FLUSH_THRESHOLD {
-		log.Info("Data threshold met, creating new sstable store.")
+		log.Info("Data threshold met, creating new index store.")
 		items := convertToKeyValueItems(s.cache)
 		str, err := s.blockStorage.WriteKvItems(items)
 
@@ -52,9 +52,9 @@ func (s *SsStore) Put(key string, value string) error {
 			return err
 		}
 
-		log.Info("Created new sstable store.")
+		log.Info("Created new index store.")
 		s.blockStorage = str
-		s.cache, _ = NewMemTableCache()
+		s.cache = NewMemTableCache()
 	}
 
 	s.cache.Add(key, value)
@@ -72,8 +72,8 @@ func (s *SsStore) Flush() {
 }
 
 func NewSsStore(dataPath string) (Store, error) {
-	cache, _ := NewMemTableCache()
-	storage := sstable.NewSsBlockStorage(dataPath)
+	cache := NewMemTableCache()
+	storage := index.NewSsBlockStorage(dataPath)
 
 	store := SsStore{storage, cache}
 

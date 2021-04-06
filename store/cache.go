@@ -1,7 +1,6 @@
 package store
 
 import (
-	"fmt"
 	lru "github.com/hashicorp/golang-lru"
 )
 
@@ -67,6 +66,10 @@ func (l *LruCache) Remove(key string) {
 
 func (l *LruCache) Keys() []string {
 	return l.Keys()
+}
+
+func (l *LruCache) Size() int {
+	return l.Lru.Len()
 }
 
 func NewLruCache() (Cache, error) {

@@ -62,18 +62,31 @@ func (b *Block) BlockKey() string {
 }
 
 func (b *Block) Keys() []string {
-	return b.items.Keys()
+	keys := make([]string, 0, b.items.Len())
+	for _, k := range b.items.Keys() {
+		key, ok := k.(string)
+		if ok {
+			keys = append(keys, key)
+		}
+	}
+
+	return keys
 }
 
 func (b *Block) Get(key string) (value string, ok bool) {
-	return b.items.Get(key)
+	v, ok := b.items.Get(key)
+	if ok {
+		value, ok = v.(string)
+	}
+
+	return value, ok
 }
 
 func (b *Block) Size() int64 {
 	return b.size
 }
 
-func NewBlock(blockKey string, items orderedmap.OrderMap) Block {
+func NewBlock(blockKey string, items orderedmap.OrderedMap) Block {
 	return Block{blockKey, items, BlockSizeBytes}
 }
 
@@ -131,7 +144,7 @@ func sortKeyValueItemsByHash(items []KeyValueItem) {
 	By(hsh).Sort(items)
 }
 
-func keyValueItemsOrderedMap(items []KeyValueItem) orderedmap.OrderedMap {
+func keyValueItemsOrderedMap(items []KeyValueItem) *orderedmap.OrderedMap {
 	m := orderedmap.NewOrderedMap()
 	for _, it := range items {
 		m.Set(it.keyHash, it)
@@ -155,7 +168,7 @@ func createBlock(items []KeyValueItem, startingIndex int) (block Block, nextInde
 	}
 
 	m := keyValueItemsOrderedMap(items[startingIndex:endIndex])
-	block = NewBlock(items[startingIndex].keyHash, m)
+	block = NewBlock(items[startingIndex].keyHash, *m)
 	nextIndex = endIndex
 
 	return block, endIndex
@@ -170,7 +183,8 @@ func writeBlock(filepath string, block Block) (offset int64, err error) {
 	offset = -1
 	defer f.Close()
 	for _, k := range block.Keys() {
-		it, _ := block.items.Get(k)
+		i, _ := block.items.Get(k)
+		it, _ := i.(KeyValueItem)
 		s := fmt.Sprintf("%d%s%s", it.Size(), it.KeyHash(), it.Value())
 		off, werr := f.WriteString(s)
 		if offset == -1 {
