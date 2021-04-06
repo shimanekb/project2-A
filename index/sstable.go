@@ -2,15 +2,11 @@ package index
 
 import (
 	"crypto/sha1"
-	"encoding/csv"
-	"errors"
 	"fmt"
 	"github.com/elliotchance/orderedmap"
 	log "github.com/sirupsen/logrus"
-	"io"
 	"os"
 	"sort"
-	"strconv"
 )
 
 const (
@@ -78,20 +74,26 @@ func (b *Block) Size() int64 {
 }
 
 func NewBlock(blockKey string, items orderedmap.OrderMap) Block {
-	return Block{blockNumber, items, BlockSizeBytes}
+	return Block{blockKey, items, BlockSizeBytes}
 }
 
 type BlockStorage interface {
-	//ReadBlock(blockNumber int) (block Block, err error)
-	WriteKvItems(items []KeyValueItem) error
+	//ReadBlock(key string) (block Block, err error)
+	WriteKvItems(items []KeyValueItem) (BlockStorage, error)
 }
 
 type SsBlockStorage struct {
 	filePath string
+	index    []string
+}
+
+func newSsBlockStorage(filepath string, index []string) BlockStorage {
+	return &SsBlockStorage{filepath, index}
 }
 
 func NewSsBlockStorage(filePath string) BlockStorage {
-	return &SsBlockStorage{filePath}
+	ind := make([]string, 0, 0)
+	return &SsBlockStorage{filePath, ind}
 }
 
 type By func(i1, i2 *KeyValueItem) bool
@@ -159,23 +161,46 @@ func createBlock(items []KeyValueItem, startingIndex int) (block Block, nextInde
 	return block, endIndex
 }
 
-func writeBlock(filepath string, block Block) error {
+func writeBlock(filepath string, block Block) (offset int64, err error) {
 	f, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return -1, err
+	}
+
+	offset = -1
+	defer f.Close()
+	for _, k := range block.Keys() {
+		it, _ := block.items.Get(k)
+		s := fmt.Sprintf("%d%s%s", it.Size(), it.KeyHash(), it.Value())
+		off, werr := f.WriteString(s)
+		if offset == -1 {
+			offset = int64(off) - block.Size()
+		}
+
+		if werr != nil {
+			return -1, werr
+		}
+	}
+
+	return offset, nil
+}
+
+func writeIndex(filepath string, index []string) error {
+	f, err := os.OpenFile(filepath, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 
 	defer f.Close()
-	for _, k := range block.Keys() {
-		it, _ := block.items.Get(k)
-		s := fmt.Sprintf("%d%s%s", it.Size(), it.KeyHash(), it.Value())
-		_, werr := f.WriteString(s)
-		if werr != nil {
-			return werr
-		}
+
+	indexString := "\n"
+	for _, indexItem := range index {
+		indexString = fmt.Sprintf("%s,%s", indexString, indexItem)
 	}
 
-	return nil
+	_, err = f.WriteString(indexString)
+
+	return err
 }
 
 func deleteSsFile(filepath string) error {
@@ -183,25 +208,43 @@ func deleteSsFile(filepath string) error {
 	return e
 }
 
-func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) error {
+func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error) {
+	log.Info("Sorting key value items for write.")
 	sortKeyValueItemsByHash(items)
+	log.Info("Key value items sorted for write.")
 	startingIndex := 0
 
+	log.Info("Removing old sstable file if exists.")
+	// TODO Replace with Swap
 	e := deleteSsFile(s.filePath)
 	if e != nil {
-		return e
+		return nil, e
 	}
 
+	index := make([]string, 0, 5000)
 	for startingIndex < len(items) {
 		block, nextIndex := createBlock(items, startingIndex)
+		log.Infof("Created block %s", block.BlockKey())
 		startingIndex = nextIndex
-		err := writeBlock(s.filePath, block)
+		_, err := writeBlock(s.filePath, block)
+		index = append(index, block.BlockKey())
 		if err != nil {
-			return err
+			log.Errorf("Unable to write block %s", block.BlockKey())
+			return nil, err
 		}
+
+		log.Infof("Block %s is written", block.BlockKey())
 	}
 
-	return nil
+	err := writeIndex(s.filePath, index)
+	if err != nil {
+		log.Errorf("Unable to write index to file %s.", s.filePath)
+		return nil, err
+	}
+
+	log.Info("Index written to file. Creating new Block storage to return.")
+	var storage BlockStorage = newSsBlockStorage(s.filePath, index)
+	return storage, nil
 }
 
 /*

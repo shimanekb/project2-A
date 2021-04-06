@@ -1,17 +1,15 @@
 package store
 
 import (
-	"github.com/shimanekb/project2-A/index"
+	"github.com/shimanekb/project2-A/index/sstable"
 	log "github.com/sirupsen/logrus"
-	"math"
 )
 
 const (
-	INDEX_FLUSH_THRESHOLD int    = 100
-	LOG_FLUSH_THRESHOLD   int    = 10
-	GET_COMMAND           string = "get"
-	PUT_COMMAND           string = "put"
-	DEL_COMMAND           string = "del"
+	DATA_FLUSH_THRESHOLD int    = 5
+	GET_COMMAND          string = "get"
+	PUT_COMMAND          string = "put"
+	DEL_COMMAND          string = "del"
 )
 
 type Command struct {
@@ -28,11 +26,38 @@ type Store interface {
 }
 
 type SsStore struct {
-	idx   index.Index
-	cache Cache
+	blockStorage sstable.BlockStorage
+	cache        Cache
+}
+
+func convertToKeyValueItems(cache Cache) []sstable.KeyValueItem {
+	items := make([]sstable.KeyValueItem, 0, cache.Size())
+	for _, key := range cache.Keys() {
+		value, _ := cache.Get(key)
+		v := value.(string)
+		kv := sstable.NewKeyValueItem(key, v)
+		items = append(items, kv)
+	}
+
+	return items
 }
 
 func (s *SsStore) Put(key string, value string) error {
+	if s.cache.Size() >= DATA_FLUSH_THRESHOLD {
+		log.Info("Data threshold met, creating new sstable store.")
+		items := convertToKeyValueItems(s.cache)
+		str, err := s.blockStorage.WriteKvItems(items)
+
+		if err != nil {
+			return err
+		}
+
+		log.Info("Created new sstable store.")
+		s.blockStorage = str
+		s.cache, _ = NewMemTableCache()
+	}
+
+	s.cache.Add(key, value)
 	return nil
 }
 
@@ -46,120 +71,11 @@ func (s *SsStore) Del(key string) {
 func (s *SsStore) Flush() {
 }
 
-func NewSsStore(dataPath string, indexPath string) (Store, error) {
-	dl := index.NewLocalDataLog(dataPath)
-	idx := index.NewLocalIndex(indexPath, dl)
-	err := idx.Load()
-	if err != nil {
-		return nil, err
-	}
-
+func NewSsStore(dataPath string) (Store, error) {
 	cache, _ := NewMemTableCache()
+	storage := sstable.NewSsBlockStorage(dataPath)
 
-	store := SsStore{idx, cache}
+	store := SsStore{storage, cache}
 
 	return &store, nil
-}
-
-type LocalStore struct {
-	idx           index.Index
-	cache         Cache
-	commandBuffer []Command
-	commandCount  int
-}
-
-func (s *LocalStore) Get(key string) (value string, ok bool) {
-	s.commandCount = s.commandCount + 1
-	val, ok := s.cache.Get(key)
-	if ok {
-		value = val.(string)
-		return value, ok
-	}
-
-	indexItems, ok := s.idx.Get(key)
-	if !ok {
-		return "", ok
-	}
-
-	dl := s.idx.DataLog()
-	//TODO make concurrent
-	for _, item := range indexItems {
-		litem, err := dl.ReadLogItem(item.Offset())
-		if err != nil {
-			value = ""
-			ok = false
-			break
-		}
-
-		if litem.Key() == key {
-			value = litem.Value()
-			ok = true
-			break
-		}
-	}
-
-	s.flush()
-	return value, ok
-}
-
-func (s *LocalStore) flushLog() {
-	log.Info("Flushing log.")
-	ids := s.idx
-	dl := s.idx.DataLog()
-	for _, cmd := range s.commandBuffer {
-		if cmd.Type != DEL_COMMAND {
-			li := index.NewLogItem(cmd.Key, cmd.Value, -1)
-			offset, err := dl.AddLogItem(li)
-			if err != nil {
-				break
-			}
-
-			iitem := index.NewIndexItem(cmd.Key, offset, li.Size())
-			ids.Put(iitem)
-		}
-	}
-	s.commandBuffer = make([]Command, 0, LOG_FLUSH_THRESHOLD)
-}
-
-func (s *LocalStore) flushIndex() {
-	log.Info("Flushing index.")
-	ids := s.idx
-	ids.Save()
-
-	s.commandCount = 0
-}
-
-func (s *LocalStore) Flush() {
-	s.flushLog()
-	s.flushIndex()
-}
-
-func (s *LocalStore) flush() {
-	cnt := float64(s.commandCount)
-	logthresh := float64(LOG_FLUSH_THRESHOLD)
-	idxthresh := float64(INDEX_FLUSH_THRESHOLD)
-	if math.Mod(cnt, logthresh) == 0 {
-		s.flushLog()
-	}
-
-	if math.Mod(cnt, idxthresh) == 0 {
-		s.flushIndex()
-	}
-}
-
-func (s *LocalStore) Del(key string) {
-	s.commandCount = s.commandCount + 1
-	s.cache.Remove(key)
-	s.idx.Del(key)
-	s.commandBuffer = append(s.commandBuffer, Command{DEL_COMMAND, key, ""})
-	s.flush()
-}
-
-func (s *LocalStore) Put(key string, value string) error {
-	s.commandCount = s.commandCount + 1
-	s.cache.Add(key, value)
-	s.commandBuffer = append(s.commandBuffer, Command{PUT_COMMAND, key, value})
-	s.flush()
-
-	return nil
 }

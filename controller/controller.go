@@ -17,8 +17,7 @@ const (
 	DEL_COMMAND       string = "del"
 	FIRST_LINE_RECORD string = "type"
 	STORAGE_DIR       string = "storage"
-	STORAGE_FILE      string = "data_records.csv"
-	INDEX_FILE        string = "index_file.csv"
+	STORAGE_FILE      string = "data_records.txt"
 )
 
 type Command struct {
@@ -51,8 +50,7 @@ func ReadCsvCommands(filePath string, outputPath string) {
 	}
 
 	logPath := filepath.Join(path, STORAGE_FILE)
-	indexPath := filepath.Join(path, INDEX_FILE)
-	localStore, storeErr := store.NewSsStore(logPath, indexPath)
+	localStore, storeErr := store.NewSsStore(logPath)
 	if storeErr != nil {
 		log.Fatal("Could not create store.", storeErr)
 	}
