@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	DATA_FLUSH_THRESHOLD int    = 5
+	DATA_FLUSH_THRESHOLD int    = 12
 	GET_COMMAND          string = "get"
 	PUT_COMMAND          string = "put"
 	DEL_COMMAND          string = "del"
@@ -43,6 +43,7 @@ func convertToKeyValueItems(cache Cache) []index.KeyValueItem {
 }
 
 func (s *SsStore) Put(key string, value string) error {
+	log.Infof("Cache size is %d", s.cache.Size())
 	if s.cache.Size() >= DATA_FLUSH_THRESHOLD {
 		log.Info("Data threshold met, creating new index store.")
 		items := convertToKeyValueItems(s.cache)
@@ -57,6 +58,7 @@ func (s *SsStore) Put(key string, value string) error {
 		s.cache = NewMemTableCache()
 	}
 
+	log.Infof("Adding key %s to cache.", key)
 	s.cache.Add(key, value)
 	return nil
 }
@@ -77,5 +79,6 @@ func NewSsStore(dataPath string) (Store, error) {
 
 	store := SsStore{storage, cache}
 
+	log.Info("Created new SsStore")
 	return &store, nil
 }

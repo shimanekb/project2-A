@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	BlockSizeBytes int64 = 4000
+	BlockSizeBytes int64 = 72
 	KeySizeChar    int   = 8
 )
 
@@ -18,7 +18,8 @@ func keyHash(key string) string {
 	h := sha1.New()
 	h.Write([]byte(key))
 	b := h.Sum(nil)
-	return fmt.Sprintf("%x", b[0:KeySizeChar])
+	hashString := fmt.Sprintf("%x", b)
+	return hashString[0:KeySizeChar]
 }
 
 type KeyValueItem struct {
@@ -54,7 +55,8 @@ func NewKeyValueItem(key string, value string) KeyValueItem {
 type Block struct {
 	blockKey string
 	items    orderedmap.OrderedMap
-	size     int64
+
+	size int64
 }
 
 func (b *Block) BlockKey() string {
@@ -147,7 +149,8 @@ func sortKeyValueItemsByHash(items []KeyValueItem) {
 func keyValueItemsOrderedMap(items []KeyValueItem) *orderedmap.OrderedMap {
 	m := orderedmap.NewOrderedMap()
 	for _, it := range items {
-		m.Set(it.keyHash, it)
+		log.Infof("Adding kv item with key %s to ordered hash", it.KeyHash())
+		m.Set(it.KeyHash(), it)
 	}
 
 	return m
@@ -157,17 +160,25 @@ func keyValueItemsOrderedMap(items []KeyValueItem) *orderedmap.OrderedMap {
 func createBlock(items []KeyValueItem, startingIndex int) (block Block, nextIndex int) {
 	var currentSizeBytes int64 = 0
 	endIndex := startingIndex
-	for currentSizeBytes+items[endIndex].Size() <= BlockSizeBytes {
-		if endIndex > len(items)-1 {
-			break
+	log.Infof("Calculating indexes from items of length %d, to create block.", len(items))
+	first := true
+
+	for endIndex < len(items) && currentSizeBytes+items[endIndex].Size() <= BlockSizeBytes {
+		it := items[endIndex]
+		meta := 3
+		if first {
+			meta = 2
+			first = false
 		}
 
-		it := items[endIndex]
-		currentSizeBytes += it.Size()
+		currentSizeBytes += (it.Size() + int64(meta))
 		endIndex += 1
 	}
 
+	log.Info("Calculated indexes to create block.")
+	log.Info("Creating ordered map for block.")
 	m := keyValueItemsOrderedMap(items[startingIndex:endIndex])
+	log.Info("Created ordered map for block.")
 	block = NewBlock(items[startingIndex].keyHash, *m)
 	nextIndex = endIndex
 
@@ -180,12 +191,21 @@ func writeBlock(filepath string, block Block) (offset int64, err error) {
 		return -1, err
 	}
 
+	firstRecord := true
 	offset = -1
 	defer f.Close()
 	for _, k := range block.Keys() {
 		i, _ := block.items.Get(k)
 		it, _ := i.(KeyValueItem)
-		s := fmt.Sprintf("%d%s%s", it.Size(), it.KeyHash(), it.Value())
+
+		var s string
+		if firstRecord {
+			s = fmt.Sprintf("%d,%s,%s", it.Size(), it.KeyHash(), it.Value())
+			firstRecord = false
+		} else {
+			s = fmt.Sprintf(",%d,%s,%s", it.Size(), it.KeyHash(), it.Value())
+		}
+
 		off, werr := f.WriteString(s)
 		if offset == -1 {
 			offset = int64(off) - block.Size()
@@ -208,8 +228,14 @@ func writeIndex(filepath string, index []string) error {
 	defer f.Close()
 
 	indexString := "\n"
+	firstItem := true
 	for _, indexItem := range index {
-		indexString = fmt.Sprintf("%s,%s", indexString, indexItem)
+		if firstItem {
+			indexString = fmt.Sprintf("%s%s", indexString, indexItem)
+			firstItem = false
+		} else {
+			indexString = fmt.Sprintf("%s,%s", indexString, indexItem)
+		}
 	}
 
 	_, err = f.WriteString(indexString)
@@ -218,8 +244,13 @@ func writeIndex(filepath string, index []string) error {
 }
 
 func deleteSsFile(filepath string) error {
-	e := os.Remove(filepath)
-	return e
+	_, err := os.Stat(filepath)
+	if os.IsNotExist(err) {
+		log.Infof("file at %s, does not exist. no removal needed.", filepath)
+		return nil
+	} else {
+		return os.Remove(filepath)
+	}
 }
 
 func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error) {
@@ -238,8 +269,8 @@ func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error
 	index := make([]string, 0, 5000)
 	for startingIndex < len(items) {
 		block, nextIndex := createBlock(items, startingIndex)
-		log.Infof("Created block %s", block.BlockKey())
 		startingIndex = nextIndex
+		log.Infof("Created block %s, next index of items are %d", block.BlockKey(), startingIndex)
 		_, err := writeBlock(s.filePath, block)
 		index = append(index, block.BlockKey())
 		if err != nil {
