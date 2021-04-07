@@ -5,16 +5,26 @@ import (
 	"encoding/csv"
 	"fmt"
 	"github.com/elliotchance/orderedmap"
+	lru "github.com/hashicorp/golang-lru"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"os"
 	"sort"
+	"strconv"
 )
 
 const (
-	BlockSizeBytes int64 = 72
-	KeySizeChar    int   = 8
+	BlockSizeBytes int64  = 72
+	KeySizeChar    int    = 8
+	GET_COMMAND    string = "get"
+	PUT_COMMAND    string = "put"
+	DEL_COMMAND    string = "del"
 )
+
+type Command struct {
+	Type string
+	Item KeyValueItem
+}
 
 func keyHash(key string) string {
 	h := sha1.New()
@@ -77,9 +87,16 @@ func (b *Block) Keys() []string {
 }
 
 func (b *Block) Get(key string) (value string, ok bool) {
-	v, ok := b.items.Get(key)
+	hk := keyHash(key)
+	v, ok := b.items.Get(hk)
+	var kv KeyValueItem
 	if ok {
-		value, ok = v.(string)
+		log.Info("Key found in block")
+		kv, ok = v.(KeyValueItem)
+	}
+
+	if ok {
+		value = kv.Value()
 	}
 
 	return value, ok
@@ -94,17 +111,154 @@ func NewBlock(blockKey string, items orderedmap.OrderedMap) Block {
 }
 
 type BlockStorage interface {
-	//ReadBlock(key string) (block Block, err error)
-	WriteKvItems(items []KeyValueItem) (BlockStorage, error)
+	ReadBlock(key string) (block *Block, err error)
+	WriteKvItems(commands []Command) (BlockStorage, error)
+	RangeSearch(key1 string, key2 string) (values []string, err error)
 }
 
 type SsBlockStorage struct {
-	filePath string
-	index    []string
+	filePath   string
+	index      []string
+	blockCache lru.ARCCache
 }
 
 func newSsBlockStorage(filepath string, index []string) BlockStorage {
-	return &SsBlockStorage{filepath, index}
+	cacheSize := 3 * BlockSizeBytes
+	var cache *lru.ARCCache
+	cache, err := lru.NewARC(int(cacheSize))
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return &SsBlockStorage{filepath, index, *cache}
+}
+
+func searchIndex(index []string, key string) (offset int64) {
+	h := keyHash(key)
+	for i, key := range index {
+		if i%2 == 0 && key > h {
+			break
+		}
+
+		if i%2 == 0 {
+			offI := i + 1
+			offset, _ = strconv.ParseInt(index[offI], 10, 64)
+		}
+	}
+
+	return offset
+}
+
+func readBlock(filePath string, offset int64) (block *Block, err error) {
+	csvfile, err := os.Open(filePath)
+	if err != nil {
+		log.Fatal("Could not open csvfile", err)
+	}
+
+	defer csvfile.Close()
+
+	_, err = csvfile.Seek(offset, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Info("Reading block line that holds index.")
+	r := csv.NewReader(csvfile)
+	record, err := r.Read()
+	if err != nil {
+		return nil, err
+	}
+	log.Info("Record is read from block offset.")
+
+	var blockKey string
+	var om *orderedmap.OrderedMap = orderedmap.NewOrderedMap()
+	for i, _ := range record {
+		if i == 0 {
+			blockKey = record[i+1]
+		}
+
+		if i == 0 || i%3 == 0 {
+			size, err := strconv.ParseInt(record[i], 10, 64)
+			if err != nil {
+				return nil, err
+			}
+
+			key := record[i+1]
+			log.Infof("Reading in kv item %s", key)
+			value := record[i+2]
+			kv := KeyValueItem{"", key, value, size}
+			om.Set(key, kv)
+		}
+	}
+
+	block = &Block{blockKey, *om, BlockSizeBytes}
+	return block, nil
+}
+
+func (s *SsBlockStorage) ReadBlock(key string) (block *Block, err error) {
+	log.Infof("Reading block that contains key %s, hash is %s", key, keyHash(key))
+	offset := searchIndex(s.index, key)
+
+	log.Infof("Found block index is %d", offset)
+
+	b, ok := s.blockCache.Get(offset)
+	if ok {
+		log.Info("Block found in block cache.")
+		block, _ = b.(*Block)
+		return block, err
+	}
+	return readBlock(s.filePath, offset)
+}
+
+func searchIndexRange(index []string, key1 string, key2 string) (offsets []int64) {
+	h1 := keyHash(key1)
+	h2 := keyHash(key2)
+	var offset int64
+	for i, key := range index {
+		if i%2 == 0 && key > h1 {
+			break
+		}
+
+		if i%2 == 0 {
+			offI := i + 1
+			offset, _ = strconv.ParseInt(index[offI], 10, 64)
+		}
+	}
+
+	for i, key := range index {
+		if i%2 == 0 && key > h2 {
+			break
+		}
+
+		if i%2 == 0 {
+			offI := i + 1
+			offs, _ := strconv.ParseInt(index[offI], 10, 64)
+
+			if offs >= offset {
+				offsets = append(offsets, offs)
+			}
+		}
+	}
+
+	return offsets
+
+}
+func (s *SsBlockStorage) RangeSearch(key1 string, key2 string) (values []string, err error) {
+	offsets := searchIndexRange(s.index, key1, key2)
+	for _, offs := range offsets {
+		block, err := readBlock(s.filePath, offs)
+		if err != nil {
+			return values, err
+		}
+
+		for _, key := range block.Keys() {
+			value, _ := block.Get(key)
+			values = append(values, value)
+		}
+	}
+
+	return values, nil
 }
 
 func loadIndex(filePath string) []string {
@@ -114,7 +268,7 @@ func loadIndex(filePath string) []string {
 	if err != nil {
 		log.Fatal("Could not open csvfile", err)
 	}
-
+	defer csvfile.Close()
 	log.Info("Reading second line that holds index.")
 	r := csv.NewReader(csvfile)
 	r.FieldsPerRecord = -1
@@ -155,7 +309,12 @@ func NewSsBlockStorage(filePath string) BlockStorage {
 	} else {
 		log.Info("No data file detected using empty index.")
 	}
-	return &SsBlockStorage{filePath, ind}
+
+	cacheSize := 3 * BlockSizeBytes
+	var cache *lru.ARCCache
+	cache, _ = lru.NewARC(int(cacheSize))
+
+	return &SsBlockStorage{filePath, ind, *cache}
 }
 
 type By func(i1, i2 *KeyValueItem) bool
@@ -307,18 +466,75 @@ func writeIndex(filepath string, index []string) error {
 	return err
 }
 
-func deleteSsFile(filepath string) error {
-	_, err := os.Stat(filepath)
-	if os.IsNotExist(err) {
-		log.Infof("file at %s, does not exist. no removal needed.", filepath)
-		return nil
-	} else {
-		return os.Remove(filepath)
+func getIndexOffsets(index []string) (offsets []int64) {
+	for i, _ := range index {
+		if i%2 == 0 {
+			offI := i + 1
+			offset, _ := strconv.ParseInt(index[offI], 10, 64)
+			offsets = append(offsets, offset)
+		}
 	}
+
+	return offsets
 }
 
-func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error) {
+func collectItemsToWrite(s SsBlockStorage, commands []Command) []KeyValueItem {
+	log.Info("Collecting items to write to new sstable.")
+	var items []KeyValueItem
+	itemMap := make(map[string]KeyValueItem)
+	offsets := getIndexOffsets(s.index)
+
+	log.Info("reading blocks for collection")
+	var blocks []Block
+	for _, offset := range offsets {
+		block, err := readBlock(s.filePath, offset)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		blocks = append(blocks, *block)
+	}
+
+	log.Info("read blocks for collection")
+
+	log.Info("Collecting key value items from blocks.")
+	for _, block := range blocks {
+		for _, k := range block.items.Keys() {
+			key, _ := k.(string)
+			value, _ := block.Get(key)
+			it := NewKeyValueItem(key, value)
+			it.keyHash = key
+			it.key = ""
+			itemMap[key] = it
+		}
+	}
+
+	log.Info("Collected key value items from blocks.")
+
+	log.Info("Pruning commands due to delete tombstones")
+	for _, cmd := range commands {
+		if cmd.Type == DEL_COMMAND {
+			log.Infof("Delete command found for key %s, removing from items to write.", cmd.Item.keyHash)
+			delete(itemMap, cmd.Item.KeyHash())
+		} else {
+			itemMap[cmd.Item.KeyHash()] = cmd.Item
+		}
+	}
+
+	log.Info("Pruned commands due to delete tombstones")
+
+	for _, value := range itemMap {
+		items = append(items, value)
+	}
+
+	log.Info("Collected items to write to new sstable.")
+	return items
+}
+
+func (s *SsBlockStorage) WriteKvItems(commands []Command) (BlockStorage, error) {
 	log.Info("Sorting key value items for write.")
+
+	items := collectItemsToWrite(*s, commands)
 	sortKeyValueItemsByHash(items)
 	log.Info("Key value items sorted for write.")
 	startingIndex := 0
@@ -359,128 +575,3 @@ func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error
 	var storage BlockStorage = newSsBlockStorage(s.filePath, index)
 	return storage, nil
 }
-
-/*
-type LocalDataLogReader struct {
-	filePath      string
-	currentOffset int64
-}
-
-
-
-type LogItem struct {
-	key    string
-	value  string
-	size   int64
-	offset int64
-}
-
-func (l *LogItem) Key() string {
-	return l.key
-}
-
-func (l *LogItem) Value() string {
-	return l.value
-}
-
-func (l *LogItem) Size() int64 {
-	return l.size
-}
-
-func (l *LogItem) Offset() int64 {
-	return l.offset
-}
-
-func NewLogItem(key string, value string, offset int64) LogItem {
-	size := int64(len([]byte(value)))
-	return LogItem{key, value, size, offset}
-}
-
-type LocalDataLog struct {
-	flushThreshold int
-	filePath       string
-	buffer         []LogItem
-}
-
-func NewLocalDataLog(filePath string) DataLog {
-	buffer := make([]LogItem, 0, 10)
-	dataLog := LocalDataLog{10, filePath, buffer}
-	return &dataLog
-}
-
-func (l *LocalDataLog) ReadLogItem(offset int64) (logItem *LogItem, err error) {
-	storeFile, err := os.OpenFile(l.filePath, os.O_RDONLY, 0644)
-
-	if _, err := os.Stat(l.filePath); os.IsNotExist(err) {
-		return nil, io.EOF
-	}
-
-	if err != nil {
-		log.Error(fmt.Sprintf("Unable to open data log file at %s", l.filePath), err)
-		return nil, err
-	}
-
-	defer storeFile.Close()
-
-	stat, _ := storeFile.Stat()
-	if stat.Size() <= offset {
-		log.Info("End of data log detected sined EOF.")
-		return nil, io.EOF
-	}
-
-	_, err = storeFile.Seek(offset, 0)
-	if err != nil {
-		log.Error(fmt.Sprintf("Unable to seek to offset in data log file at %s", l.filePath), err)
-		return nil, err
-	}
-
-	reader := csv.NewReader(storeFile)
-	record, err := reader.Read()
-
-	if err != nil {
-		log.Error(fmt.Sprintf("Unable to read csv record in data log file at %s", l.filePath), err)
-		return nil, err
-	}
-
-	key := record[0]
-	value := record[1]
-	s := record[2]
-	size, parseError := strconv.ParseInt(s, 10, 64)
-
-	if parseError != nil {
-		return nil, errors.New(fmt.Sprintf("Could not convert size to int for offset %d", offset))
-	}
-
-	li := NewLogItem(key, value, offset)
-	li.size = size
-	return &li, nil
-}
-
-func (l *LocalDataLog) AddLogItem(logItem LogItem) (offset int64, err error) {
-	log.Infof("Adding log item to %s.", l.filePath)
-	file, err := os.OpenFile(l.filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		log.Errorf("Could not open data log file %s", l.filePath, err)
-		return 0, err
-	}
-
-	defer file.Close()
-
-	length, write_err := file.WriteString(fmt.Sprintf("%s,%s,%d\n", logItem.Key(), logItem.Value(), logItem.Size()))
-
-	if write_err != nil {
-		log.Errorf("Could not write log item to data log file %s", l.filePath, err)
-		return 0, write_err
-	}
-
-	fi, statErr := file.Stat()
-	if statErr != nil {
-		log.Error("Could not get current file size to calculate new offset.", err)
-		return 0, statErr
-	}
-
-	offset = fi.Size() - int64(length)
-	log.Infof("Added log item at offset %d to %s.", offset, l.filePath)
-	return offset, nil
-}
-*/
