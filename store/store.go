@@ -78,8 +78,13 @@ func (s *SsStore) Get(key string) (value string, ok bool) {
 
 	if ok {
 		log.Infof("Key %s found in cache.", key)
-		value, _ = v.(string)
-		return value, ok
+		cmd, _ := v.(index.Command)
+		log.Infof("Current command for key %s, is %s", cmd.Item.Key(), cmd.Type)
+		if cmd.Type == DEL_COMMAND {
+			log.Infof("Key %s is not a delete entry in cache.", key)
+			return "", false
+		}
+		return cmd.Item.Value(), ok
 	}
 
 	log.Infof("Key %s not found in cache, reading block.", key)

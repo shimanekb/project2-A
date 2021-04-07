@@ -214,6 +214,12 @@ func (s *SsBlockStorage) ReadBlock(key string) (block *Block, err error) {
 func searchIndexRange(index []string, key1 string, key2 string) (offsets []int64) {
 	h1 := keyHash(key1)
 	h2 := keyHash(key2)
+	if h2 > h1 {
+		tmp := h1
+		h1 = h2
+		h2 = tmp
+	}
+
 	var offset int64
 	for i, key := range index {
 		if i%2 == 0 && key > h1 {
