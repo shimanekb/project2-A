@@ -2,9 +2,11 @@ package index
 
 import (
 	"crypto/sha1"
+	"encoding/csv"
 	"fmt"
 	"github.com/elliotchance/orderedmap"
 	log "github.com/sirupsen/logrus"
+	"io"
 	"os"
 	"sort"
 )
@@ -55,8 +57,7 @@ func NewKeyValueItem(key string, value string) KeyValueItem {
 type Block struct {
 	blockKey string
 	items    orderedmap.OrderedMap
-
-	size int64
+	size     int64
 }
 
 func (b *Block) BlockKey() string {
@@ -106,8 +107,54 @@ func newSsBlockStorage(filepath string, index []string) BlockStorage {
 	return &SsBlockStorage{filepath, index}
 }
 
+func loadIndex(filePath string) []string {
+	log.Infof("Loading index from %s", filePath)
+	ind := make([]string, 0, 0)
+	csvfile, err := os.Open(filePath)
+	if err != nil {
+		log.Fatal("Could not open csvfile", err)
+	}
+
+	log.Info("Reading second line that holds index.")
+	r := csv.NewReader(csvfile)
+	r.FieldsPerRecord = -1
+	var rec []string
+	for {
+		record, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		rec = record
+	}
+
+	log.Info("Second line retrieved, parsing index.")
+	for i, key := range rec {
+		if i%2 == 0 {
+			offI := i + 1
+			offset := rec[offI]
+			log.Infof("Adding key %s and offset %s to index.", key, offset)
+			ind = append(ind, key)
+			ind = append(ind, offset)
+		}
+	}
+
+	log.Info("Index is loaded.")
+	return ind
+}
+
 func NewSsBlockStorage(filePath string) BlockStorage {
 	ind := make([]string, 0, 0)
+	_, err := os.Stat(filePath)
+	if err == nil {
+		log.Info("Existing data file detected loading in index.")
+		ind = loadIndex(filePath)
+	} else {
+		log.Info("No data file detected using empty index.")
+	}
 	return &SsBlockStorage{filePath, ind}
 }
 
@@ -163,7 +210,8 @@ func createBlock(items []KeyValueItem, startingIndex int) (block Block, nextInde
 	log.Infof("Calculating indexes from items of length %d, to create block.", len(items))
 	first := true
 
-	for endIndex < len(items) && currentSizeBytes+items[endIndex].Size() <= BlockSizeBytes {
+	// minus one is for newline
+	for endIndex < len(items) && currentSizeBytes+items[endIndex].Size() <= BlockSizeBytes-1 {
 		it := items[endIndex]
 		meta := 3
 		if first {
@@ -185,15 +233,31 @@ func createBlock(items []KeyValueItem, startingIndex int) (block Block, nextInde
 	return block, endIndex
 }
 
-func writeBlock(filepath string, block Block) (offset int64, err error) {
+func getLastIndex(filepath string) (offset int64, err error) {
 	f, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return -1, err
 	}
 
-	firstRecord := true
-	offset = -1
 	defer f.Close()
+
+	offset, err = f.Seek(0, io.SeekEnd)
+	return offset, err
+}
+
+func writeBlock(filepath string, block Block) (offset int64, err error) {
+	offset, err = getLastIndex(filepath)
+	if err != nil {
+		return -1, err
+	}
+
+	f, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+
+	firstRecord := true
 	for _, k := range block.Keys() {
 		i, _ := block.items.Get(k)
 		it, _ := i.(KeyValueItem)
@@ -205,15 +269,15 @@ func writeBlock(filepath string, block Block) (offset int64, err error) {
 		} else {
 			s = fmt.Sprintf(",%d,%s,%s", it.Size(), it.KeyHash(), it.Value())
 		}
-
-		off, werr := f.WriteString(s)
-		if offset == -1 {
-			offset = int64(off) - block.Size()
-		}
-
+		_, werr := f.WriteString(s)
 		if werr != nil {
 			return -1, werr
 		}
+	}
+
+	_, werr := f.WriteString("\n")
+	if werr != nil {
+		return -1, werr
 	}
 
 	return offset, nil
@@ -227,7 +291,7 @@ func writeIndex(filepath string, index []string) error {
 
 	defer f.Close()
 
-	indexString := "\n"
+	indexString := ""
 	firstItem := true
 	for _, indexItem := range index {
 		if firstItem {
@@ -267,8 +331,9 @@ func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error
 		block, nextIndex := createBlock(items, startingIndex)
 		startingIndex = nextIndex
 		log.Infof("Created block %s, next index of items are %d", block.BlockKey(), startingIndex)
-		_, err := writeBlock(tmpFilePath, block)
+		off, err := writeBlock(tmpFilePath, block)
 		index = append(index, block.BlockKey())
+		index = append(index, fmt.Sprintf("%d", off))
 		if err != nil {
 			log.Errorf("Unable to write block %s", block.BlockKey())
 			return nil, err
