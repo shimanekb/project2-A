@@ -260,18 +260,14 @@ func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error
 	startingIndex := 0
 
 	log.Info("Removing old sstable file if exists.")
-	// TODO Replace with Swap
-	e := deleteSsFile(s.filePath)
-	if e != nil {
-		return nil, e
-	}
+	tmpFilePath := "./temp_data.txt"
 
 	index := make([]string, 0, 5000)
 	for startingIndex < len(items) {
 		block, nextIndex := createBlock(items, startingIndex)
 		startingIndex = nextIndex
 		log.Infof("Created block %s, next index of items are %d", block.BlockKey(), startingIndex)
-		_, err := writeBlock(s.filePath, block)
+		_, err := writeBlock(tmpFilePath, block)
 		index = append(index, block.BlockKey())
 		if err != nil {
 			log.Errorf("Unable to write block %s", block.BlockKey())
@@ -281,9 +277,16 @@ func (s *SsBlockStorage) WriteKvItems(items []KeyValueItem) (BlockStorage, error
 		log.Infof("Block %s is written", block.BlockKey())
 	}
 
-	err := writeIndex(s.filePath, index)
+	err := writeIndex(tmpFilePath, index)
 	if err != nil {
 		log.Errorf("Unable to write index to file %s.", s.filePath)
+		return nil, err
+	}
+
+	log.Info("Swapping old data file with new one.")
+	err = os.Rename(tmpFilePath, s.filePath)
+	if err != nil {
+		log.Fatal("Could not swap data files.")
 		return nil, err
 	}
 
