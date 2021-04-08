@@ -15,15 +15,17 @@ const (
 	GET_COMMAND       string = "get"
 	PUT_COMMAND       string = "put"
 	DEL_COMMAND       string = "del"
+	SCAN_COMMAND      string = "scan"
 	FIRST_LINE_RECORD string = "type"
 	STORAGE_DIR       string = "storage"
 	STORAGE_FILE      string = "data_records.txt"
 )
 
 type Command struct {
-	Type  string
-	Key   string
-	Value string
+	Type   string
+	Key    string
+	KeyTwo string
+	Value  string
 }
 
 func ReadCsvCommands(filePath string, outputPath string) {
@@ -70,7 +72,7 @@ func ReadCsvCommands(filePath string, outputPath string) {
 			log.Infoln("First line detected, skipping.")
 			continue
 		}
-		command := Command{record[0], record[1], record[3]}
+		command := Command{record[0], record[1], record[2], record[3]}
 		cmd_err := ProcessCommand(command, localStore, outputPath)
 		if cmd_err != nil {
 			log.Errorln(cmd_err)
@@ -91,6 +93,30 @@ func WriteOutputFirstLine(outputPath string) error {
 	return write_err
 }
 
+func WriteOutputs(command Command, outcome int, value []string, outputPath string) error {
+	file, err := os.OpenFile(outputPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+
+	if err != nil {
+		return err
+	}
+
+	vstring := ""
+	first := true
+	for _, v := range value {
+		if first {
+			vstring = fmt.Sprintf("%s", v)
+			first = false
+		} else {
+			vstring = fmt.Sprintf("%s,%s", vstring, v)
+		}
+	}
+
+	_, write_err := file.WriteString(fmt.Sprintf("%s,%s,%d,%s\n", command.Type,
+		command.Key, outcome, vstring))
+	file.Close()
+	return write_err
+
+}
 func WriteOutput(command Command, outcome int, value string, outputPath string) error {
 	file, err := os.OpenFile(outputPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 
@@ -107,6 +133,20 @@ func WriteOutput(command Command, outcome int, value string, outputPath string) 
 
 func ProcessCommand(command Command, storage store.Store, outputPath string) error {
 	switch {
+	case SCAN_COMMAND == command.Type:
+		log.Infof("Scan command given for key: %s, key2: %s", command.Key,
+			command.KeyTwo)
+		values, ok := storage.Scan(command.Key, command.KeyTwo)
+		if ok {
+			WriteOutputs(command, len(values), values, outputPath)
+
+			log.Infof("Scan command successful given for key: %s, key2: %s. Found %d items.", command.Key,
+				command.KeyTwo, len(values))
+		} else {
+			WriteOutput(command, 0, "", outputPath)
+		}
+
+		return nil
 	case GET_COMMAND == command.Type:
 		log.Infof("Get command given for key: %s, value: %s", command.Key,
 			command.Value)

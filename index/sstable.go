@@ -86,6 +86,22 @@ func (b *Block) Keys() []string {
 	return keys
 }
 
+func (b *Block) GetH(key string) (value string, ok bool) {
+	hk := key
+	v, ok := b.items.Get(hk)
+	var kv KeyValueItem
+	if ok {
+		log.Info("Key found in block")
+		kv, ok = v.(KeyValueItem)
+	}
+
+	if ok {
+		value = kv.Value()
+	}
+
+	return value, ok
+}
+
 func (b *Block) Get(key string) (value string, ok bool) {
 	hk := keyHash(key)
 	v, ok := b.items.Get(hk)
@@ -222,28 +238,14 @@ func searchIndexRange(index []string, key1 string, key2 string) (offsets []int64
 
 	var offset int64
 	for i, key := range index {
-		if i%2 == 0 && key > h1 {
-			break
+		if i%2 != 0 {
+			continue
 		}
 
-		if i%2 == 0 {
+		if key >= h1 || key <= h2 {
 			offI := i + 1
 			offset, _ = strconv.ParseInt(index[offI], 10, 64)
-		}
-	}
-
-	for i, key := range index {
-		if i%2 == 0 && key > h2 {
-			break
-		}
-
-		if i%2 == 0 {
-			offI := i + 1
-			offs, _ := strconv.ParseInt(index[offI], 10, 64)
-
-			if offs >= offset {
-				offsets = append(offsets, offs)
-			}
+			offsets = append(offsets, offset)
 		}
 	}
 
@@ -251,17 +253,35 @@ func searchIndexRange(index []string, key1 string, key2 string) (offsets []int64
 
 }
 func (s *SsBlockStorage) RangeSearch(key1 string, key2 string) (values []string, err error) {
+	log.Infof("Searching index for blocks that contain keys between %s and %s.", key1, key2)
 	offsets := searchIndexRange(s.index, key1, key2)
+	log.Infof("Found %d blocks that contain keys between %s and %s", len(offsets), key1, key2)
 	for _, offs := range offsets {
+		log.Infof("Reading in block.")
 		block, err := readBlock(s.filePath, offs)
 		if err != nil {
 			return values, err
 		}
 
-		for _, key := range block.Keys() {
-			value, _ := block.Get(key)
-			values = append(values, value)
+		h1 := keyHash(key1)
+		h2 := keyHash(key2)
+		if h2 > h1 {
+			log.Info("Keys hash cause out of order search, adjusting.")
+			tmp := h1
+			h1 = h2
+			h2 = tmp
 		}
+
+		log.Infof("Checking if key from read blocks falls inclusively between keys %s and %s", key1, key2)
+		for _, key := range block.Keys() {
+			if key >= h1 || key <= h2 {
+				value, _ := block.GetH(key)
+				log.Infof("Scan value is %s", value)
+
+				values = append(values, value)
+			}
+		}
+		log.Infof("Checked keys inbetween %s and %s, current list of values is %d", key1, key2, len(values))
 	}
 
 	return values, nil
@@ -505,9 +525,9 @@ func collectItemsToWrite(s SsBlockStorage, commands []Command) []KeyValueItem {
 
 	log.Info("Collecting key value items from blocks.")
 	for _, block := range blocks {
-		for _, k := range block.items.Keys() {
-			key, _ := k.(string)
-			value, _ := block.Get(key)
+		for _, k := range block.Keys() {
+			key := k
+			value, _ := block.GetH(key)
 			it := NewKeyValueItem(key, value)
 			it.keyHash = key
 			it.key = ""

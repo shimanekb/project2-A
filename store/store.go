@@ -16,6 +16,7 @@ type Store interface {
 	Put(key string, value string) error
 	Get(key string) (value string, ok bool)
 	Del(key string)
+	Scan(keyone string, keytwo string) (values []string, ok bool)
 	Flush()
 }
 
@@ -33,6 +34,17 @@ func convertToKeyValueItems(cache Cache) []index.Command {
 	}
 
 	return items
+}
+
+func (s *SsStore) Scan(keyone string, keytwo string) (values []string, ok bool) {
+	ok = true
+	values, err := s.blockStorage.RangeSearch(keyone, keytwo)
+	if err != nil {
+		log.Error(err)
+		ok = false
+	}
+
+	return values, ok
 }
 
 func (s *SsStore) Flush() {
@@ -81,9 +93,10 @@ func (s *SsStore) Get(key string) (value string, ok bool) {
 		cmd, _ := v.(index.Command)
 		log.Infof("Current command for key %s, is %s", cmd.Item.Key(), cmd.Type)
 		if cmd.Type == DEL_COMMAND {
-			log.Infof("Key %s is not a delete entry in cache.", key)
+			log.Infof("Key %s is a delete entry in cache.", key)
 			return "", false
 		}
+
 		return cmd.Item.Value(), ok
 	}
 
