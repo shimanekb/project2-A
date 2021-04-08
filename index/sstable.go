@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	BlockSizeBytes int64  = 72
+	BlockSizeBytes int64  = 4000
 	KeySizeChar    int    = 8
 	GET_COMMAND    string = "get"
 	PUT_COMMAND    string = "put"
